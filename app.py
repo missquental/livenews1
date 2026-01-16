@@ -422,11 +422,18 @@ def create_live_stream(service, title, description, scheduled_start_time, tags=N
             },
             "status": {
                 "privacyStatus": privacy_status,
-                "selfDeclaredMadeForKids": made_for_kids
+                "selfDeclaredMadeForKids": made_for_kids,
+                "enableAutoStart": True,  # Auto start live stream
+                "enableAutoStop": True    # Auto stop when video ends
             },
             "contentDetails": {
                 "enableAutoStart": True,
-                "enableAutoStop": True
+                "enableAutoStop": True,
+                "recordFromStart": True,
+                "enableContentEncryption": False,
+                "enableEmbed": True,
+                "enableDvr": True,
+                "enableLowLatency": False
             }
         }
         
@@ -644,6 +651,72 @@ def get_youtube_categories():
         "28": "Science & Technology"
     }
 
+# Fungsi untuk auto start streaming
+def auto_start_streaming(video_path, stream_key, is_shorts=False, custom_rtmp=None):
+    """Auto start streaming dengan konfigurasi default"""
+    if not video_path or not stream_key:
+        st.error("❌ Video atau stream key tidak ditemukan!")
+        return False
+    
+    # Set session state untuk streaming
+    st.session_state['streaming'] = True
+    st.session_state['stream_start_time'] = datetime.now()
+    st.session_state['live_logs'] = []
+    
+    def log_callback(msg):
+        if 'live_logs' not in st.session_state:
+            st.session_state['live_logs'] = []
+        st.session_state['live_logs'].append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+        # Keep only last 100 logs in memory
+        if len(st.session_state['live_logs']) > 100:
+            st.session_state['live_logs'] = st.session_state['live_logs'][-100:]
+    
+    # Jalankan FFmpeg di thread terpisah
+    st.session_state['ffmpeg_thread'] = threading.Thread(
+        target=run_ffmpeg, 
+        args=(video_path, stream_key, is_shorts, log_callback, custom_rtmp or None, st.session_state['session_id']), 
+        daemon=True
+    )
+    st.session_state['ffmpeg_thread'].start()
+    
+    # Log ke database
+    log_to_database(st.session_state['session_id'], "INFO", f"Auto streaming started: {video_path}")
+    return True
+
+# Fungsi untuk auto create live broadcast
+def auto_create_live_broadcast(service, video_title="Auto Live Stream", video_description="Live streaming session", tags=None):
+    """Auto create live broadcast dengan setting default"""
+    try:
+        with st.spinner("Creating auto YouTube Live broadcast..."):
+            # Schedule for immediate start
+            scheduled_time = datetime.now() + timedelta(seconds=30)
+            
+            live_info = create_live_stream(
+                service, 
+                video_title, 
+                video_description, 
+                scheduled_time,
+                tags or [],
+                "20",  # Gaming category
+                "public",  # Public privacy
+                False  # Not made for kids
+            )
+            
+            if live_info:
+                st.session_state['current_stream_key'] = live_info['stream_key']
+                st.session_state['live_broadcast_info'] = live_info
+                st.success("🎉 Auto YouTube Live Broadcast Created Successfully!")
+                log_to_database(st.session_state['session_id'], "INFO", f"Auto YouTube Live created: {live_info['watch_url']}")
+                return live_info
+            else:
+                st.error("❌ Failed to create auto live broadcast")
+                return None
+    except Exception as e:
+        error_msg = f"Error creating auto YouTube Live: {e}"
+        st.error(error_msg)
+        log_to_database(st.session_state['session_id'], "ERROR", error_msg)
+        return None
+
 def main():
     # Page configuration must be the first Streamlit command
     st.set_page_config(
@@ -828,7 +901,7 @@ def main():
             st.info("No video files found in current directory")
         
         # Video upload
-        uploaded_file = st.file_uploader("Or upload new video", type=['mp4', 'flv', 'avi', 'mov', 'mkv'])
+        uploaded_file = st.file_uploader("Or upload new video", type=['mp4', '.flv', '.avi', '.mov', '.mkv'])
         
         if uploaded_file:
             with open(uploaded_file.name, "wb") as f:
@@ -858,6 +931,27 @@ def main():
             # YouTube Live Stream Management
             st.subheader("🎬 YouTube Live Stream Management")
             
+            # Auto Live Stream Button
+            if st.button("🚀 Auto Start Live Stream", type="primary", help="Auto create and start live stream"):
+                service = st.session_state['youtube_service']
+                
+                # Auto create live broadcast
+                live_info = auto_create_live_broadcast(
+                    service, 
+                    video_title=f"Auto Live Stream {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                    video_description="Auto-generated live stream"
+                )
+                
+                if live_info and video_path:
+                    # Auto start streaming
+                    if auto_start_streaming(video_path, live_info['stream_key']):
+                        st.success("🎉 Auto live stream started successfully!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to start auto live stream")
+                else:
+                    st.error("❌ Need both YouTube service and video file to auto start")
+            
             # Instructions panel
             with st.expander("💡 How to Use YouTube Live Features"):
                 st.markdown("""
@@ -871,6 +965,11 @@ def main():
                 - Appears in YouTube Studio dashboard
                 - Uses all settings from form below
                 - Ready for audience immediately
+                
+                **🚀 Auto Start Live Stream:** ⭐ **AUTO MODE**
+                - Automatically creates live broadcast
+                - Starts streaming immediately
+                - Uses default settings
                 
                 **📋 View Existing Streams:**
                 - Shows all your existing live broadcasts
