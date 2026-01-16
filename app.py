@@ -652,7 +652,7 @@ def get_youtube_categories():
     }
 
 # Fungsi untuk auto start streaming
-def auto_start_streaming(video_path, stream_key, is_shorts=False, custom_rtmp=None):
+def auto_start_streaming(video_path, stream_key, is_shorts=False, custom_rtmp=None, session_id=None):
     """Auto start streaming dengan konfigurasi default"""
     if not video_path or not stream_key:
         st.error("❌ Video atau stream key tidak ditemukan!")
@@ -674,39 +674,55 @@ def auto_start_streaming(video_path, stream_key, is_shorts=False, custom_rtmp=No
     # Jalankan FFmpeg di thread terpisah
     st.session_state['ffmpeg_thread'] = threading.Thread(
         target=run_ffmpeg, 
-        args=(video_path, stream_key, is_shorts, log_callback, custom_rtmp or None, st.session_state['session_id']), 
+        args=(video_path, stream_key, is_shorts, log_callback, custom_rtmp or None, session_id), 
         daemon=True
     )
     st.session_state['ffmpeg_thread'].start()
     
     # Log ke database
-    log_to_database(st.session_state['session_id'], "INFO", f"Auto streaming started: {video_path}")
+    log_to_database(session_id, "INFO", f"Auto streaming started: {video_path}")
     return True
 
-# Fungsi untuk auto create live broadcast
-def auto_create_live_broadcast(service, video_title="Auto Live Stream", video_description="Live streaming session", tags=None):
-    """Auto create live broadcast dengan setting default"""
+# Fungsi untuk auto create live broadcast dengan setting manual/otomatis
+def auto_create_live_broadcast(service, use_custom_settings=True, custom_settings=None, session_id=None):
+    """Auto create live broadcast dengan setting manual atau otomatis"""
     try:
         with st.spinner("Creating auto YouTube Live broadcast..."):
             # Schedule for immediate start
             scheduled_time = datetime.now() + timedelta(seconds=30)
             
+            # Default settings
+            default_settings = {
+                'title': f"Auto Live Stream {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                'description': "Auto-generated live stream",
+                'tags': [],
+                'category_id': "20",  # Gaming
+                'privacy_status': "public",
+                'made_for_kids': False
+            }
+            
+            # Gunakan setting custom jika tersedia
+            if use_custom_settings and custom_settings:
+                settings = {**default_settings, **custom_settings}
+            else:
+                settings = default_settings
+            
             live_info = create_live_stream(
                 service, 
-                video_title, 
-                video_description, 
+                settings['title'],
+                settings['description'],
                 scheduled_time,
-                tags or [],
-                "20",  # Gaming category
-                "public",  # Public privacy
-                False  # Not made for kids
+                settings['tags'],
+                settings['category_id'],
+                settings['privacy_status'],
+                settings['made_for_kids']
             )
             
             if live_info:
                 st.session_state['current_stream_key'] = live_info['stream_key']
                 st.session_state['live_broadcast_info'] = live_info
                 st.success("🎉 Auto YouTube Live Broadcast Created Successfully!")
-                log_to_database(st.session_state['session_id'], "INFO", f"Auto YouTube Live created: {live_info['watch_url']}")
+                log_to_database(session_id, "INFO", f"Auto YouTube Live created: {live_info['watch_url']}")
                 return live_info
             else:
                 st.error("❌ Failed to create auto live broadcast")
@@ -714,7 +730,7 @@ def auto_create_live_broadcast(service, video_title="Auto Live Stream", video_de
     except Exception as e:
         error_msg = f"Error creating auto YouTube Live: {e}"
         st.error(error_msg)
-        log_to_database(st.session_state['session_id'], "ERROR", error_msg)
+        log_to_database(session_id, "ERROR", error_msg)
         return None
 
 def main():
@@ -931,20 +947,90 @@ def main():
             # YouTube Live Stream Management
             st.subheader("🎬 YouTube Live Stream Management")
             
+            # Auto Live Stream Settings Mode
+            st.markdown("### 🚀 Auto Live Stream Options")
+            
+            # Pilihan mode setting
+            setting_mode = st.radio(
+                "Mode Setting:", 
+                ["🔧 Manual Settings", "⚡ Auto Settings"],
+                horizontal=True
+            )
+            
+            # Container untuk setting manual
+            if setting_mode == "🔧 Manual Settings":
+                with st.expander("📝 Manual Live Stream Settings", expanded=True):
+                    # Basic settings
+                    col_set1, col_set2 = st.columns(2)
+                    
+                    with col_set1:
+                        auto_stream_title = st.text_input("🎬 Stream Title", value=f"Auto Live Stream {datetime.now().strftime('%Y-%m-%d %H:%M')}", key="auto_stream_title")
+                        auto_privacy_status = st.selectbox("🔒 Privacy", ["public", "unlisted", "private"], key="auto_privacy_status")
+                        auto_made_for_kids = st.checkbox("👶 Made for Kids", key="auto_made_for_kids")
+                    
+                    with col_set2:
+                        categories = get_youtube_categories()
+                        category_names = list(categories.values())
+                        selected_category_name = st.selectbox("📂 Category", category_names, index=category_names.index("Gaming"), key="auto_category")
+                        auto_category_id = [k for k, v in categories.items() if v == selected_category_name][0]
+                        
+                        auto_schedule_type = st.selectbox("⏰ Schedule", ["📍 Simpan sebagai Draft", "🔴 Publish Sekarang"], key="auto_schedule")
+                    
+                    # Description
+                    auto_stream_description = st.text_area("📄 Stream Description", 
+                                                         value="Auto-generated live stream with manual settings", 
+                                                         max_chars=5000,
+                                                         height=100,
+                                                         key="auto_stream_description")
+                    
+                    # Tags
+                    auto_tags_input = st.text_input("🏷️ Tags (comma separated)", 
+                                                  placeholder="gaming, live, stream, youtube",
+                                                  key="auto_tags_input")
+                    auto_tags = [tag.strip() for tag in auto_tags_input.split(",") if tag.strip()] if auto_tags_input else []
+                    
+                    if auto_tags:
+                        st.write("**Tags:**", ", ".join(auto_tags))
+                    
+                    # Simpan setting manual ke session state
+                    st.session_state['manual_settings'] = {
+                        'title': auto_stream_title,
+                        'description': auto_stream_description,
+                        'tags': auto_tags,
+                        'category_id': auto_category_id,
+                        'privacy_status': auto_privacy_status,
+                        'made_for_kids': auto_made_for_kids
+                    }
+            
             # Auto Live Stream Button
-            if st.button("🚀 Auto Start Live Stream", type="primary", help="Auto create and start live stream"):
+            if st.button("🚀 Auto Start Live Stream", type="primary", help="Auto create and start live stream with selected settings"):
                 service = st.session_state['youtube_service']
                 
-                # Auto create live broadcast
+                # Tentukan setting yang akan digunakan
+                if setting_mode == "🔧 Manual Settings" and 'manual_settings' in st.session_state:
+                    use_custom_settings = True
+                    custom_settings = st.session_state['manual_settings']
+                    st.info("🔧 Using manual settings for live stream")
+                else:
+                    use_custom_settings = False
+                    custom_settings = None
+                    st.info("⚡ Using auto settings for live stream")
+                
+                # Auto create live broadcast dengan setting yang dipilih
                 live_info = auto_create_live_broadcast(
                     service, 
-                    video_title=f"Auto Live Stream {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                    video_description="Auto-generated live stream"
+                    use_custom_settings=use_custom_settings,
+                    custom_settings=custom_settings,
+                    session_id=st.session_state['session_id']
                 )
                 
                 if live_info and video_path:
                     # Auto start streaming
-                    if auto_start_streaming(video_path, live_info['stream_key']):
+                    if auto_start_streaming(
+                        video_path, 
+                        live_info['stream_key'],
+                        session_id=st.session_state['session_id']
+                    ):
                         st.success("🎉 Auto live stream started successfully!")
                         st.rerun()
                     else:
@@ -969,7 +1055,7 @@ def main():
                 **🚀 Auto Start Live Stream:** ⭐ **AUTO MODE**
                 - Automatically creates live broadcast
                 - Starts streaming immediately
-                - Uses default settings
+                - Choose between Manual or Auto settings
                 
                 **📋 View Existing Streams:**
                 - Shows all your existing live broadcasts
@@ -977,9 +1063,9 @@ def main():
                 - Quick access to Watch and Studio URLs
                 
                 **⚠️ Important Notes:**
-                - Fill out stream settings below before creating
-                - YouTube Live broadcasts are scheduled to start in 30 seconds
-                - Use "Create YouTube Live" for best experience
+                - Select video file first
+                - Choose setting mode (Manual/Auto)
+                - YouTube Live broadcasts start in 30 seconds
                 """)
             
             # Three main buttons
